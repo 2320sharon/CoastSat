@@ -34,7 +34,7 @@ from datetime import datetime
 from pylab import ginput
 
 # CoastSat modules
-from coastsat import SDS_tools, SDS_preprocess
+from CoastSeg.coastsat import SDS_tools, SDS_preprocess
 
 np.seterr(all='ignore') # raise/ignore divisions by 0 and nans
 
@@ -118,7 +118,7 @@ def extract_shorelines(metadata, settings):
         str_new = ''
         if not sklearn.__version__[:4] == '0.20':
             str_new = '_new'
-        if satname in ['L5','L7','L8','L9']:
+        if satname in ['L5','L7','L8']:
             pixel_size = 15
             if settings['sand_color'] == 'dark':
                 clf = joblib.load(os.path.join(filepath_models, 'NN_4classes_Landsat_dark%s.pkl'%str_new))
