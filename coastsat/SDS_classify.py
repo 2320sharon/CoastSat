@@ -25,7 +25,8 @@ from sklearn.metrics import confusion_matrix
 np.set_printoptions(precision=2)
 
 # CoastSat modules
-from CoastSeg.coastsat import SDS_preprocess, SDS_shoreline, SDS_tools
+from coastsat import SDS_preprocess, SDS_shoreline, SDS_tools
+# from CoastSeg.coastsat import SDS_preprocess, SDS_shoreline, SDS_tools
 
 class SelectFromImage(object):
     """

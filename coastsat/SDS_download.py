@@ -29,7 +29,8 @@ from skimage import morphology, transform
 from scipy import ndimage
 
 # CoastSat modules
-from CoastSeg.coastsat import SDS_preprocess, SDS_tools, gdal_merge
+from coastsat import SDS_preprocess, SDS_tools, gdal_merge
+# from CoastSeg.coastsat import SDS_preprocess, SDS_tools, gdal_merge
 
 np.seterr(all='ignore') # raise/ignore divisions by 0 and nans
 gdal.PushErrorHandler('CPLQuietErrorHandler')

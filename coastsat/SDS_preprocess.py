@@ -28,7 +28,8 @@ import geopandas as gpd
 from shapely import geometry
 
 # CoastSat modules
-from CoastSeg.coastsat import SDS_tools
+from coastsat import SDS_tools
+# from CoastSeg.coastsat import SDS_tools
 
 np.seterr(all='ignore') # raise/ignore divisions by 0 and nans
 
@@ -681,17 +682,16 @@ def get_reference_sl(metadata, settings):
         fn = SDS_tools.get_filenames(filenames[i],filepath, satname)
         im_ms, georef, cloud_mask, im_extra, im_QA, im_nodata = preprocess_single(fn, satname, settings['cloud_mask_issue'], settings['pan_off'])
 
-            # compute cloud_cover percentage (with no data pixels)
-            cloud_cover_combined = np.divide(sum(sum(cloud_mask.astype(int))),
-                                    (cloud_mask.shape[0]*cloud_mask.shape[1]))
-            if cloud_cover_combined > 0.99: # if 99% of cloudy pixels in image skip
-                continue
-
-            # remove no data pixels from the cloud mask (for example L7 bands of no data should not be accounted for)
-            cloud_mask_adv = np.logical_xor(cloud_mask, im_nodata)
-            # compute updated cloud cover percentage (without no data pixels)
-            cloud_cover = np.divide(sum(sum(cloud_mask_adv.astype(int))),
-                                    (sum(sum((~im_nodata).astype(int)))))
+        # compute cloud_cover percentage (with no data pixels)
+        cloud_cover_combined = np.divide(sum(sum(cloud_mask.astype(int))),
+                                (cloud_mask.shape[0]*cloud_mask.shape[1]))
+        if cloud_cover_combined > 0.99: # if 99% of cloudy pixels in image skip
+            continue
+        # remove no data pixels from the cloud mask (for example L7 bands of no data should not be accounted for)
+        cloud_mask_adv = np.logical_xor(cloud_mask, im_nodata)
+        # compute updated cloud cover percentage (without no data pixels)
+        cloud_cover = np.divide(sum(sum(cloud_mask_adv.astype(int))),
+                                (sum(sum((~im_nodata).astype(int)))))
 
         # skip image if cloud cover is above threshold
         if cloud_cover > settings['cloud_thresh']:
@@ -769,11 +769,11 @@ def get_reference_sl(metadata, settings):
                           fontsize=14)
                 plt.draw()
 
-                    # let user click on the shoreline
-                    pts = ginput(n=50000, timeout=-1, show_clicks=True)
-                    pts_pix = np.array(pts)
-                    # convert pixel coordinates to world coordinates
-                    pts_world = SDS_tools.convert_pix2world(pts_pix[:,[1,0]], georef)
+                # let user click on the shoreline
+                pts = ginput(n=50000, timeout=-1, show_clicks=True)
+                pts_pix = np.array(pts)
+                # convert pixel coordinates to world coordinates
+                pts_world = SDS_tools.convert_pix2world(pts_pix[:,[1,0]], georef)
 
                 # interpolate between points clicked by the user (1m resolution)
                 pts_world_interp = np.expand_dims(np.array([np.nan, np.nan]),axis=0)
@@ -795,34 +795,30 @@ def get_reference_sl(metadata, settings):
                 # save as geometry (to create .geojson file later)
                 geoms.append(geometry.LineString(pts_world_interp))
 
-                    # convert to pixel coordinates and plot
-                    pts_pix_interp = SDS_tools.convert_world2pix(pts_world_interp, georef)
-                    pts_sl = np.append(pts_sl, pts_world_interp, axis=0)
-                    ax.plot(pts_pix_interp[:,0], pts_pix_interp[:,1], 'r--')
-                    ax.plot(pts_pix_interp[0,0], pts_pix_interp[0,1],'ko')
-                    ax.plot(pts_pix_interp[-1,0], pts_pix_interp[-1,1],'ko')
-
-                    # update title and buttons
-                    add_button.set_visible(True)
-                    end_button.set_visible(True)
-                    ax.set_title('click on <add> to digitize another shoreline or on <end> to finish and save the shoreline(s)',
-                              fontsize=14)
+                # convert to pixel coordinates and plot
+                pts_pix_interp = SDS_tools.convert_world2pix(pts_world_interp, georef)
+                pts_sl = np.append(pts_sl, pts_world_interp, axis=0)
+                ax.plot(pts_pix_interp[:,0], pts_pix_interp[:,1], 'r--')
+                ax.plot(pts_pix_interp[0,0], pts_pix_interp[0,1],'ko')
+                ax.plot(pts_pix_interp[-1,0], pts_pix_interp[-1,1],'ko')
+                # update title and buttons
+                add_button.set_visible(True)
+                end_button.set_visible(True)
+                ax.set_title('click on <add> to digitize another shoreline or on <end> to finish and save the shoreline(s)',
+                          fontsize=14)
+                plt.draw()
+                # let the user click again (<add> another shoreline or <end>)
+                pt_input = ginput(n=1, timeout=-1, show_clicks=False)
+                pt_input = np.array(pt_input)
+                # if user clicks on <end>, save the points and break the loop
+                if pt_input[0][0] > im_ms.shape[1]/2:
+                    add_button.set_visible(False)
+                    end_button.set_visible(False)
+                    plt.title('Reference shoreline saved as ' + sitename + '_reference_shoreline.pkl and ' + sitename + '_reference_shoreline.geojson')
                     plt.draw()
-
-                    # let the user click again (<add> another shoreline or <end>)
-                    pt_input = ginput(n=1, timeout=-1, show_clicks=False)
-                    pt_input = np.array(pt_input)
-
-                    # if user clicks on <end>, save the points and break the loop
-                    if pt_input[0][0] > im_ms.shape[1]/2:
-                        add_button.set_visible(False)
-                        end_button.set_visible(False)
-                        plt.title('Reference shoreline saved as ' + sitename + '_reference_shoreline.pkl and ' + sitename + '_reference_shoreline.geojson')
-                        plt.draw()
-                        ginput(n=1, timeout=3, show_clicks=False)
-                        plt.close()
-                        break
-
+                    ginput(n=1, timeout=3, show_clicks=False)
+                    plt.close()
+                    break
                 pts_sl = np.delete(pts_sl,0,axis=0)
                 # convert world image coordinates to user-defined coordinate system
                 image_epsg = metadata[satname]['epsg'][i]
