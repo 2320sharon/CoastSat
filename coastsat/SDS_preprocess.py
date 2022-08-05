@@ -32,8 +32,8 @@ from CoastSeg.coastsat import SDS_tools
 
 np.seterr(all='ignore') # raise/ignore divisions by 0 and nans
 
-# Main function to preprocess a satellite image (L5,L7,L8 or S2)
-def preprocess_single(fn, satname, cloud_mask_issue):
+# Main function to preprocess a satellite image (L5, L7, L8, L9 or S2)
+def preprocess_single(fn, satname, cloud_mask_issue, pan_off):
     """
     Reads the image and outputs the pansharpened/down-sampled multispectral bands,
     the georeferencing vector of the image (coordinates of the upper left pixel),
@@ -53,7 +53,9 @@ def preprocess_single(fn, satname, cloud_mask_issue):
         name of the satellite mission (e.g., 'L5')
     cloud_mask_issue: boolean
         True if there is an issue with the cloud mask and sand pixels are being masked on the images
-
+    pan_off : boolean
+        if True, disable panchromatic sharpening and ignore pan band
+        
     Returns:
     -----------
     im_ms: np.array
@@ -77,37 +79,21 @@ def preprocess_single(fn, satname, cloud_mask_issue):
     # L5 images
     #=============================================================================================#
     if satname == 'L5':
-
-        # read all bands
-        data = gdal.Open(fn, gdal.GA_ReadOnly)
+        # filepaths to .tif files
+        fn_ms = fn[0]
+        fn_mask = fn[1]
+        # read ms bands
+        data = gdal.Open(fn_ms, gdal.GA_ReadOnly)
         georef = np.array(data.GetGeoTransform())
         bands = [data.GetRasterBand(k + 1).ReadAsArray() for k in range(data.RasterCount)]
         im_ms = np.stack(bands, 2)
-
-        # down-sample to 15 m (half of the original pixel size)
-        nrows = im_ms.shape[0]*2
-        ncols = im_ms.shape[1]*2
-
-        # create cloud mask
-        im_QA = im_ms[:,:,5]
-        im_ms = im_ms[:,:,:-1]
+        # read cloud mask
+        data = gdal.Open(fn_mask, gdal.GA_ReadOnly)
+        bands = [data.GetRasterBand(k + 1).ReadAsArray() for k in range(data.RasterCount)]
+        im_QA = bands[0]
         cloud_mask = create_cloud_mask(im_QA, satname, cloud_mask_issue)
 
-        # resize the image using bilinear interpolation (order 1)
-        im_ms = transform.resize(im_ms,(nrows, ncols), order=1, preserve_range=True,
-                                 mode='constant')
-        # resize the image using nearest neighbour interpolation (order 0)
-        cloud_mask = transform.resize(cloud_mask, (nrows, ncols), order=0, preserve_range=True,
-                                      mode='constant').astype('bool_')
-
-        # adjust georeferencing vector to the new image size
-        # scale becomes 15m and the origin is adjusted to the center of new top left pixel
-        georef[1] = 15
-        georef[5] = -15
-        georef[0] = georef[0] + 7.5
-        georef[3] = georef[3] - 7.5
-        
-        # check if -inf or nan values on any band and eventually add those pixels to cloud mask        
+        # check if -inf or nan values on any band and eventually add those pixels to cloud mask
         im_nodata = np.zeros(cloud_mask.shape).astype(bool)
         for k in range(im_ms.shape[2]):
             im_inf = np.isin(im_ms[:,:,k], -np.inf)
@@ -127,7 +113,7 @@ def preprocess_single(fn, satname, cloud_mask_issue):
         im_extra = []
 
     #=============================================================================================#
-    # L7 images
+    # L7, L8 and L9 images
     #=============================================================================================#
     elif satname == 'L7':
 
@@ -146,19 +132,8 @@ def preprocess_single(fn, satname, cloud_mask_issue):
         fn_ms = fn[1]
         data = gdal.Open(fn_ms, gdal.GA_ReadOnly)
         bands = [data.GetRasterBand(k + 1).ReadAsArray() for k in range(data.RasterCount)]
-        im_ms = np.stack(bands, 2)
-
-        # create cloud mask
-        im_QA = im_ms[:,:,5]
+        im_QA = bands[0]
         cloud_mask = create_cloud_mask(im_QA, satname, cloud_mask_issue)
-
-        # resize the image using bilinear interpolation (order 1)
-        im_ms = im_ms[:,:,:5]
-        im_ms = transform.resize(im_ms,(nrows, ncols), order=1, preserve_range=True,
-                                 mode='constant')
-        # resize the image using nearest neighbour interpolation (order 0)
-        cloud_mask = transform.resize(cloud_mask, (nrows, ncols), order=0, preserve_range=True,
-                                      mode='constant').astype('bool_')
         # check if -inf or nan values on any band and eventually add those pixels to cloud mask        
         im_nodata = np.zeros(cloud_mask.shape).astype(bool)
         for k in range(im_ms.shape[2]):
@@ -171,7 +146,7 @@ def preprocess_single(fn, satname, cloud_mask_issue):
         for k in [1,3,4]: # loop through the Green, NIR and SWIR bands
             im_zeros = np.logical_and(np.isin(im_ms[:,:,k],0), im_zeros)
         # add zeros to im nodata
-        im_nodata = np.logical_or(im_zeros, im_nodata)   
+        im_nodata = np.logical_or(im_zeros, im_nodata)
         # update cloud mask with all the nodata pixels
         cloud_mask = np.logical_or(cloud_mask, im_nodata)
 
@@ -319,7 +294,7 @@ def preprocess_single(fn, satname, cloud_mask_issue):
         # dilate if image was merged as there could be issues at the edges
         if 'merged' in fn10:
             im_nodata = morphology.dilation(im_nodata,morphology.square(5))
-            
+
         # update cloud mask with all the nodata pixels
         cloud_mask = np.logical_or(cloud_mask, im_nodata)
 
@@ -327,7 +302,6 @@ def preprocess_single(fn, satname, cloud_mask_issue):
         im_extra = im20
 
     return im_ms, georef, cloud_mask, im_extra, im_QA, im_nodata
-
 
 ###################################################################################################
 # AUXILIARY FUNCTIONS
@@ -370,13 +344,13 @@ def create_cloud_mask(im_QA, satname, cloud_mask_issue):
     # remove cloud pixels that form very thin features. These are beach or swash pixels that are
     # erroneously identified as clouds by the CFMASK algorithm applied to the images by the USGS.
     if sum(sum(cloud_mask)) > 0 and sum(sum(~cloud_mask)) > 0:
-        morphology.remove_small_objects(cloud_mask, min_size=10, connectivity=1, in_place=True)
+        morphology.remove_small_objects(cloud_mask, min_size=40, connectivity=1, in_place=True)
 
         if cloud_mask_issue:
-            elem = morphology.square(3) # use a square of width 3 pixels
+            elem = morphology.square(6) # use a square of width 6 pixels
             cloud_mask = morphology.binary_opening(cloud_mask,elem) # perform image opening
             # remove objects with less than 25 connected pixels
-            morphology.remove_small_objects(cloud_mask, min_size=25, connectivity=1, in_place=True)
+            morphology.remove_small_objects(cloud_mask, min_size=100, connectivity=1, in_place=True)
 
     return cloud_mask
 
@@ -392,12 +366,12 @@ def hist_match(source, template):
         array
     template: np.array
         Template image; can have different dimensions to source
-        
+
     Returns:
     -----------
     matched: np.array
         The transformed output image
-        
+
     """
 
     oldshape = source.shape
@@ -427,9 +401,9 @@ def hist_match(source, template):
 def pansharpen(im_ms, im_pan, cloud_mask):
     """
     Pansharpens a multispectral image, using the panchromatic band and a cloud mask.
-    A PCA is applied to the image, then the 1st PC is replaced, after histogram 
+    A PCA is applied to the image, then the 1st PC is replaced, after histogram
     matching with the panchromatic band. Note that it is essential to match the
-    histrograms of the 1st PC and the panchromatic band before replacing and 
+    histrograms of the 1st PC and the panchromatic band before replacing and
     inverting the PCA.
 
     KV WRL 2018
@@ -447,9 +421,12 @@ def pansharpen(im_ms, im_pan, cloud_mask):
     -----------
     im_ms_ps: np.ndarray
         Pansharpened multispectral image (3D)
-        
-    """
 
+    """
+    # check that cloud cover is not too high otherwise pansharpening fails
+    if sum(sum(cloud_mask)) > 0.95*cloud_mask.shape[0]*cloud_mask.shape[1]:
+        return im_ms
+    
     # reshape image into vector and apply cloud mask
     vec = im_ms.reshape(im_ms.shape[0] * im_ms.shape[1], im_ms.shape[2])
     vec_mask = cloud_mask.reshape(im_ms.shape[0] * im_ms.shape[1])
@@ -584,9 +561,9 @@ def save_jpg(metadata, settings, **kwargs):
     Returns:
     -----------
     Stores the images as .jpg in a folder named /preprocessed
-    
+
     """
-    
+
     sitename = settings['inputs']['sitename']
     cloud_thresh = settings['cloud_thresh']
     filepath_data = settings['inputs']['filepath']
@@ -597,17 +574,19 @@ def save_jpg(metadata, settings, **kwargs):
             os.makedirs(filepath_jpg)
 
     # loop through satellite list
+    print('Saving images as jpg:')
     for satname in metadata.keys():
-
+        
         filepath = SDS_tools.get_filepath(settings['inputs'],satname)
         filenames = metadata[satname]['filenames']
-
+        print('%s: %d images'%(satname,len(filenames)))
         # loop through images
         for i in range(len(filenames)):
+            print('\r%d%%' %int((i+1)/len(filenames)*100), end='')
             # image filename
             fn = SDS_tools.get_filenames(filenames[i],filepath, satname)
             # read and preprocess image
-            im_ms, georef, cloud_mask, im_extra, im_QA, im_nodata = preprocess_single(fn, satname, settings['cloud_mask_issue'])
+            im_ms, georef, cloud_mask, im_extra, im_QA, im_nodata = preprocess_single(fn, satname, settings['cloud_mask_issue'], settings['pan_off'])
 
             # compute cloud_cover percentage (with no data pixels)
             cloud_cover_combined = np.divide(sum(sum(cloud_mask.astype(int))),
@@ -627,7 +606,7 @@ def save_jpg(metadata, settings, **kwargs):
             date = filenames[i][:19]
             plt.ioff()  # turning interactive plotting off
             create_jpg(im_ms, cloud_mask, date, satname, filepath_jpg)
-
+        print('')
     # print the location where the images have been saved
     print('Satellite images saved as .jpg in ' + os.path.join(filepath_data, sitename,
                                                     'jpg_files', 'preprocessed'))
@@ -676,38 +655,31 @@ def get_reference_sl(metadata, settings):
         with open(os.path.join(filepath, sitename + '_reference_shoreline.pkl'), 'rb') as f:
             refsl = pickle.load(f)
         return refsl
-    
-    # otherwise get the user to manually digitise a shoreline on S2, L8 or L5 images (no L7 because of scan line error)
-    else:
-        # first try to use S2 images (10m res for manually digitizing the reference shoreline)
-        if 'S2' in metadata.keys():
-            satname = 'S2'
-            filepath = SDS_tools.get_filepath(settings['inputs'],satname)
-            filenames = metadata[satname]['filenames']
-        # if no S2 images, try L8  (15m res in the RGB with pansharpening)
-        elif not 'S2' in metadata.keys() and 'L8' in metadata.keys():
-            satname = 'L8'
-            filepath = SDS_tools.get_filepath(settings['inputs'],satname)
-            filenames = metadata[satname]['filenames']
-        # if no S2 images and no L8, use L5 images (L7 images have black diagonal bands making it
-        # hard to manually digitize a shoreline)
-        elif not 'S2' in metadata.keys() and not 'L8' in metadata.keys() and 'L5' in metadata.keys():
-            satname = 'L5'
-            filepath = SDS_tools.get_filepath(settings['inputs'],satname)
-            filenames = metadata[satname]['filenames']
-        else:
-            raise Exception('You cannot digitize the shoreline on L7 images (because of gaps in the images), add another L8, S2 or L5 to your dataset.')
-            
-        # create figure
-        fig, ax = plt.subplots(1,1, figsize=[18,9], tight_layout=True)
-        mng = plt.get_current_fig_manager()
-        mng.window.showMaximized()
-        # loop trhough the images
-        for i in range(len(filenames)):
 
-            # read image
-            fn = SDS_tools.get_filenames(filenames[i],filepath, satname)
-            im_ms, georef, cloud_mask, im_extra, im_QA, im_nodata = preprocess_single(fn, satname, settings['cloud_mask_issue'])
+    # otherwise get the user to manually digitise a shoreline on 
+    # S2, L8, L9 or L5 images (no L7 because of scan line error)
+    # first try to use S2 images (10m res for manually digitizing the reference shoreline)
+    if 'S2' in metadata.keys(): satname = 'S2'
+    # if no S2 images, use L8 or L9 (15m res in the RGB with pansharpening)
+    elif 'L8' in metadata.keys(): satname = 'L8'
+    elif 'L9' in metadata.keys(): satname = 'L9'
+    # if no S2, L8 or L9 use L5 (30m res)
+    elif 'L5' in metadata.keys(): satname = 'L5'
+    # if only L7 images, ask user to download other images
+    else:
+        raise Exception('You cannot digitize the shoreline on L7 images (because of gaps in the images), add another L8, S2 or L5 to your dataset.')
+    filepath = SDS_tools.get_filepath(settings['inputs'],satname)
+    filenames = metadata[satname]['filenames']
+    # create figure
+    fig, ax = plt.subplots(1,1, figsize=[18,9], tight_layout=True)
+    mng = plt.get_current_fig_manager()
+    mng.window.showMaximized()
+    # loop trhough the images
+    for i in range(len(filenames)):
+
+        # read image
+        fn = SDS_tools.get_filenames(filenames[i],filepath, satname)
+        im_ms, georef, cloud_mask, im_extra, im_QA, im_nodata = preprocess_single(fn, satname, settings['cloud_mask_issue'], settings['pan_off'])
 
             # compute cloud_cover percentage (with no data pixels)
             cloud_cover_combined = np.divide(sum(sum(cloud_mask.astype(int))),
@@ -721,81 +693,81 @@ def get_reference_sl(metadata, settings):
             cloud_cover = np.divide(sum(sum(cloud_mask_adv.astype(int))),
                                     (sum(sum((~im_nodata).astype(int)))))
 
-            # skip image if cloud cover is above threshold
-            if cloud_cover > settings['cloud_thresh']:
-                continue
+        # skip image if cloud cover is above threshold
+        if cloud_cover > settings['cloud_thresh']:
+            continue
 
-            # rescale image intensity for display purposes
-            im_RGB = rescale_image_intensity(im_ms[:,:,[2,1,0]], cloud_mask, 99.9)
+        # rescale image intensity for display purposes
+        im_RGB = rescale_image_intensity(im_ms[:,:,[2,1,0]], cloud_mask, 99.9)
 
-            # plot the image RGB on a figure
-            ax.axis('off')
-            ax.imshow(im_RGB)
+        # plot the image RGB on a figure
+        ax.axis('off')
+        ax.imshow(im_RGB)
 
-            # decide if the image if good enough for digitizing the shoreline
-            ax.set_title('Press <right arrow> if image is clear enough to digitize the shoreline.\n' +
-                      'If the image is cloudy press <left arrow> to get another image', fontsize=14)
-            # set a key event to accept/reject the detections (see https://stackoverflow.com/a/15033071)
-            # this variable needs to be immuatable so we can access it after the keypress event
-            skip_image = False
-            key_event = {}
-            def press(event):
-                # store what key was pressed in the dictionary
-                key_event['pressed'] = event.key
-            # let the user press a key, right arrow to keep the image, left arrow to skip it
-            # to break the loop the user can press 'escape'
-            while True:
-                btn_keep = plt.text(1.1, 0.9, 'keep ⇨', size=12, ha="right", va="top",
-                                    transform=ax.transAxes,
-                                    bbox=dict(boxstyle="square", ec='k',fc='w'))
-                btn_skip = plt.text(-0.1, 0.9, '⇦ skip', size=12, ha="left", va="top",
-                                    transform=ax.transAxes,
-                                    bbox=dict(boxstyle="square", ec='k',fc='w'))
-                btn_esc = plt.text(0.5, 0, '<esc> to quit', size=12, ha="center", va="top",
-                                    transform=ax.transAxes,
-                                    bbox=dict(boxstyle="square", ec='k',fc='w'))
-                plt.draw()
-                fig.canvas.mpl_connect('key_press_event', press)
-                plt.waitforbuttonpress()
-                # after button is pressed, remove the buttons
-                btn_skip.remove()
-                btn_keep.remove()
-                btn_esc.remove()
-                # keep/skip image according to the pressed key, 'escape' to break the loop
-                if key_event.get('pressed') == 'right':
-                    skip_image = False
-                    break
-                elif key_event.get('pressed') == 'left':
-                    skip_image = True
-                    break
-                elif key_event.get('pressed') == 'escape':
-                    plt.close()
-                    raise StopIteration('User cancelled checking shoreline detection')
-                else:
-                    plt.waitforbuttonpress()
-                    
-            if skip_image:
-                ax.clear()
-                continue
+        # decide if the image if good enough for digitizing the shoreline
+        ax.set_title('Press <right arrow> if image is clear enough to digitize the shoreline.\n' +
+                  'If the image is cloudy press <left arrow> to get another image', fontsize=14)
+        # set a key event to accept/reject the detections (see https://stackoverflow.com/a/15033071)
+        # this variable needs to be immuatable so we can access it after the keypress event
+        skip_image = False
+        key_event = {}
+        def press(event):
+            # store what key was pressed in the dictionary
+            key_event['pressed'] = event.key
+        # let the user press a key, right arrow to keep the image, left arrow to skip it
+        # to break the loop the user can press 'escape'
+        while True:
+            btn_keep = plt.text(1.1, 0.9, 'keep ⇨', size=12, ha="right", va="top",
+                                transform=ax.transAxes,
+                                bbox=dict(boxstyle="square", ec='k',fc='w'))
+            btn_skip = plt.text(-0.1, 0.9, '⇦ skip', size=12, ha="left", va="top",
+                                transform=ax.transAxes,
+                                bbox=dict(boxstyle="square", ec='k',fc='w'))
+            btn_esc = plt.text(0.5, 0, '<esc> to quit', size=12, ha="center", va="top",
+                                transform=ax.transAxes,
+                                bbox=dict(boxstyle="square", ec='k',fc='w'))
+            plt.draw()
+            fig.canvas.mpl_connect('key_press_event', press)
+            plt.waitforbuttonpress()
+            # after button is pressed, remove the buttons
+            btn_skip.remove()
+            btn_keep.remove()
+            btn_esc.remove()
+            # keep/skip image according to the pressed key, 'escape' to break the loop
+            if key_event.get('pressed') == 'right':
+                skip_image = False
+                break
+            elif key_event.get('pressed') == 'left':
+                skip_image = True
+                break
+            elif key_event.get('pressed') == 'escape':
+                plt.close()
+                raise StopIteration('User cancelled checking shoreline detection')
             else:
-                # create two new buttons
-                add_button = plt.text(0, 0.9, 'add', size=16, ha="left", va="top",
-                                       transform=plt.gca().transAxes,
-                                       bbox=dict(boxstyle="square", ec='k',fc='w'))
-                end_button = plt.text(1, 0.9, 'end', size=16, ha="right", va="top",
-                                       transform=plt.gca().transAxes,
-                                       bbox=dict(boxstyle="square", ec='k',fc='w'))
-                # add multiple reference shorelines (until user clicks on <end> button)
-                pts_sl = np.expand_dims(np.array([np.nan, np.nan]),axis=0)
-                geoms = []
-                while 1:
-                    add_button.set_visible(False)
-                    end_button.set_visible(False)
-                    # update title (instructions)
-                    ax.set_title('Click points along the shoreline (enough points to capture the beach curvature).\n' +
-                              'Start at one end of the beach.\n' + 'When finished digitizing, click <ENTER>',
-                              fontsize=14)
-                    plt.draw()
+                plt.waitforbuttonpress()
+
+        if skip_image:
+            ax.clear()
+            continue
+        else:
+            # create two new buttons
+            add_button = plt.text(0, 0.9, 'add', size=16, ha="left", va="top",
+                                   transform=plt.gca().transAxes,
+                                   bbox=dict(boxstyle="square", ec='k',fc='w'))
+            end_button = plt.text(1, 0.9, 'end', size=16, ha="right", va="top",
+                                   transform=plt.gca().transAxes,
+                                   bbox=dict(boxstyle="square", ec='k',fc='w'))
+            # add multiple reference shorelines (until user clicks on <end> button)
+            pts_sl = np.expand_dims(np.array([np.nan, np.nan]),axis=0)
+            geoms = []
+            while 1:
+                add_button.set_visible(False)
+                end_button.set_visible(False)
+                # update title (instructions)
+                ax.set_title('Click points along the shoreline (enough points to capture the beach curvature).\n' +
+                          'Start at one end of the beach.\n' + 'When finished digitizing, click <ENTER>',
+                          fontsize=14)
+                plt.draw()
 
                     # let user click on the shoreline
                     pts = ginput(n=50000, timeout=-1, show_clicks=True)
@@ -803,25 +775,25 @@ def get_reference_sl(metadata, settings):
                     # convert pixel coordinates to world coordinates
                     pts_world = SDS_tools.convert_pix2world(pts_pix[:,[1,0]], georef)
 
-                    # interpolate between points clicked by the user (1m resolution)
-                    pts_world_interp = np.expand_dims(np.array([np.nan, np.nan]),axis=0)
-                    for k in range(len(pts_world)-1):
-                        pt_dist = np.linalg.norm(pts_world[k,:]-pts_world[k+1,:])
-                        xvals = np.arange(0,pt_dist)
-                        yvals = np.zeros(len(xvals))
-                        pt_coords = np.zeros((len(xvals),2))
-                        pt_coords[:,0] = xvals
-                        pt_coords[:,1] = yvals
-                        phi = 0
-                        deltax = pts_world[k+1,0] - pts_world[k,0]
-                        deltay = pts_world[k+1,1] - pts_world[k,1]
-                        phi = np.pi/2 - np.math.atan2(deltax, deltay)
-                        tf = transform.EuclideanTransform(rotation=phi, translation=pts_world[k,:])
-                        pts_world_interp = np.append(pts_world_interp,tf(pt_coords), axis=0)
-                    pts_world_interp = np.delete(pts_world_interp,0,axis=0)
+                # interpolate between points clicked by the user (1m resolution)
+                pts_world_interp = np.expand_dims(np.array([np.nan, np.nan]),axis=0)
+                for k in range(len(pts_world)-1):
+                    pt_dist = np.linalg.norm(pts_world[k,:]-pts_world[k+1,:])
+                    xvals = np.arange(0,pt_dist)
+                    yvals = np.zeros(len(xvals))
+                    pt_coords = np.zeros((len(xvals),2))
+                    pt_coords[:,0] = xvals
+                    pt_coords[:,1] = yvals
+                    phi = 0
+                    deltax = pts_world[k+1,0] - pts_world[k,0]
+                    deltay = pts_world[k+1,1] - pts_world[k,1]
+                    phi = np.pi/2 - np.math.atan2(deltax, deltay)
+                    tf = transform.EuclideanTransform(rotation=phi, translation=pts_world[k,:])
+                    pts_world_interp = np.append(pts_world_interp,tf(pt_coords), axis=0)
+                pts_world_interp = np.delete(pts_world_interp,0,axis=0)
 
-                    # save as geometry (to create .geojson file later)
-                    geoms.append(geometry.LineString(pts_world_interp))
+                # save as geometry (to create .geojson file later)
+                geoms.append(geometry.LineString(pts_world_interp))
 
                     # convert to pixel coordinates and plot
                     pts_pix_interp = SDS_tools.convert_world2pix(pts_world_interp, georef)
