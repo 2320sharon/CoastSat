@@ -26,15 +26,15 @@ from pylab import ginput
 import pickle
 import geopandas as gpd
 from shapely import geometry
+import re
 
 # CoastSat modules
-from coastsat import SDS_tools
-# from CoastSeg.coastsat import SDS_tools
+from CoastSeg.CoastSat.coastsat import SDS_tools
 
 np.seterr(all='ignore') # raise/ignore divisions by 0 and nans
 
 # Main function to preprocess a satellite image (L5, L7, L8, L9 or S2)
-def preprocess_single(fn, satname, cloud_mask_issue, pan_off):
+def preprocess_single(fn, satname, cloud_mask_issue, pan_off, collection):
     """
     Reads the image and outputs the pansharpened/down-sampled multispectral bands,
     the georeferencing vector of the image (coordinates of the upper left pixel),
@@ -56,6 +56,8 @@ def preprocess_single(fn, satname, cloud_mask_issue, pan_off):
         True if there is an issue with the cloud mask and sand pixels are being masked on the images
     pan_off : boolean
         if True, disable panchromatic sharpening and ignore pan band
+    collection: str
+        Landsat collection ,'C01' or 'C02'
         
     Returns:
     -----------
@@ -75,7 +77,19 @@ def preprocess_single(fn, satname, cloud_mask_issue, pan_off):
         2D array with True where no data values (-inf) are located
 
     """
-
+    
+    if isinstance(fn, list):
+        fn_to_split=fn[0]
+    elif isinstance(fn, str):
+        fn_to_split=fn
+    # split by os.sep and only get the filename at the end then split again to remove file extension
+    fn_to_split=fn_to_split.split(os.sep)[-1].split('.')[0]
+    # search for the year the tif was taken with regex and convert to int
+    year = int(re.search('[0-9]+',fn_to_split).group(0))
+    # after 2022 everything is automatically from Collection 2
+    if collection == 'C01' and year >= 2022:
+        collection = 'C02'
+        
     #=============================================================================================#
     # L5 images
     #=============================================================================================#
@@ -92,7 +106,7 @@ def preprocess_single(fn, satname, cloud_mask_issue, pan_off):
         data = gdal.Open(fn_mask, gdal.GA_ReadOnly)
         bands = [data.GetRasterBand(k + 1).ReadAsArray() for k in range(data.RasterCount)]
         im_QA = bands[0]
-        cloud_mask = create_cloud_mask(im_QA, satname, cloud_mask_issue)
+        cloud_mask = create_cloud_mask(im_QA, satname, cloud_mask_issue, collection)
 
         # check if -inf or nan values on any band and eventually add those pixels to cloud mask
         im_nodata = np.zeros(cloud_mask.shape).astype(bool)
@@ -112,6 +126,13 @@ def preprocess_single(fn, satname, cloud_mask_issue, pan_off):
         
         # no extra image for Landsat 5 (they are all 30 m bands)
         im_extra = []
+        
+        # read cloud mask
+        data = gdal.Open(fn_mask, gdal.GA_ReadOnly)
+        bands = [data.GetRasterBand(k + 1).ReadAsArray() for k in range(data.RasterCount)]
+        im_QA = bands[0]
+        cloud_mask = create_cloud_mask(im_QA, satname, cloud_mask_issue, collection)
+
 
     #=============================================================================================#
     # L7, L8 and L9 images
@@ -135,7 +156,7 @@ def preprocess_single(fn, satname, cloud_mask_issue, pan_off):
         bands = [data.GetRasterBand(k + 1).ReadAsArray() for k in range(data.RasterCount)]
         im_QA = bands[0]
         cloud_mask = create_cloud_mask(im_QA, satname, cloud_mask_issue)
-        # check if -inf or nan values on any band and eventually add those pixels to cloud mask        
+        # check if -inf or nan values on any band and eventually add those pixels to cloud mask
         im_nodata = np.zeros(cloud_mask.shape).astype(bool)
         for k in range(im_ms.shape[2]):
             im_inf = np.isin(im_ms[:,:,k], -np.inf)
@@ -272,7 +293,7 @@ def preprocess_single(fn, satname, cloud_mask_issue, pan_off):
         bands = [data.GetRasterBand(k + 1).ReadAsArray() for k in range(data.RasterCount)]
         im60 = np.stack(bands, 2)
         im_QA = im60[:,:,0]
-        cloud_mask = create_cloud_mask(im_QA, satname, cloud_mask_issue)
+        cloud_mask = create_cloud_mask(im_QA, satname, cloud_mask_issue, collection)
         # resize the cloud mask using nearest neighbour interpolation (order 0)
         cloud_mask = transform.resize(cloud_mask,(nrows, ncols), order=0, preserve_range=True,
                                       mode='constant')
@@ -295,7 +316,7 @@ def preprocess_single(fn, satname, cloud_mask_issue, pan_off):
         # dilate if image was merged as there could be issues at the edges
         if 'merged' in fn10:
             im_nodata = morphology.dilation(im_nodata,morphology.square(5))
-
+            
         # update cloud mask with all the nodata pixels
         cloud_mask = np.logical_or(cloud_mask, im_nodata)
 
@@ -304,11 +325,12 @@ def preprocess_single(fn, satname, cloud_mask_issue, pan_off):
 
     return im_ms, georef, cloud_mask, im_extra, im_QA, im_nodata
 
+
 ###################################################################################################
 # AUXILIARY FUNCTIONS
 ###################################################################################################
 
-def create_cloud_mask(im_QA, satname, cloud_mask_issue):
+def create_cloud_mask(im_QA, satname, cloud_mask_issue, collection):
     """
     Creates a cloud mask using the information contained in the QA band.
 
@@ -323,7 +345,9 @@ def create_cloud_mask(im_QA, satname, cloud_mask_issue):
     cloud_mask_issue: boolean
         True if there is an issue with the cloud mask and sand pixels are being
         erroneously masked on the images
-
+    collection: str
+        Landsat collection ,'C01' or 'C02'
+        
     Returns:
     -----------
     cloud_mask : np.array
@@ -332,7 +356,7 @@ def create_cloud_mask(im_QA, satname, cloud_mask_issue):
     """
 
     # convert QA bits (the bits allocated to cloud cover vary depending on the satellite mission)
-    if satname == 'L8':
+    if satname in ['L8','L9']:
         cloud_values = [2800, 2804, 2808, 2812, 6896, 6900, 6904, 6908]
     elif satname == 'L7' or satname == 'L5' or satname == 'L4':
         cloud_values = [752, 756, 760, 764]
@@ -367,12 +391,12 @@ def hist_match(source, template):
         array
     template: np.array
         Template image; can have different dimensions to source
-
+        
     Returns:
     -----------
     matched: np.array
         The transformed output image
-
+        
     """
 
     oldshape = source.shape
@@ -402,9 +426,9 @@ def hist_match(source, template):
 def pansharpen(im_ms, im_pan, cloud_mask):
     """
     Pansharpens a multispectral image, using the panchromatic band and a cloud mask.
-    A PCA is applied to the image, then the 1st PC is replaced, after histogram
+    A PCA is applied to the image, then the 1st PC is replaced, after histogram 
     matching with the panchromatic band. Note that it is essential to match the
-    histrograms of the 1st PC and the panchromatic band before replacing and
+    histrograms of the 1st PC and the panchromatic band before replacing and 
     inverting the PCA.
 
     KV WRL 2018
@@ -422,7 +446,7 @@ def pansharpen(im_ms, im_pan, cloud_mask):
     -----------
     im_ms_ps: np.ndarray
         Pansharpened multispectral image (3D)
-
+        
     """
     # check that cloud cover is not too high otherwise pansharpening fails
     if sum(sum(cloud_mask)) > 0.95*cloud_mask.shape[0]*cloud_mask.shape[1]:
@@ -538,7 +562,6 @@ def create_jpg(im_ms, cloud_mask, date, satname, filepath):
     fname=os.path.join(filepath, date + '_' + satname + '.jpg')
     imsave(fname, im_RGB)
 
-
 def save_jpg(metadata, settings, **kwargs):
     """
     Saves a .jpg image for all the images contained in metadata.
@@ -562,12 +585,13 @@ def save_jpg(metadata, settings, **kwargs):
     Returns:
     -----------
     Stores the images as .jpg in a folder named /preprocessed
-
+    
     """
-
+    
     sitename = settings['inputs']['sitename']
     cloud_thresh = settings['cloud_thresh']
     filepath_data = settings['inputs']['filepath']
+    collection = settings['inputs']['landsat_collection']
 
     # create subfolder to store the jpg files
     filepath_jpg = os.path.join(filepath_data, sitename, 'jpg_files', 'preprocessed')
@@ -587,7 +611,8 @@ def save_jpg(metadata, settings, **kwargs):
             # image filename
             fn = SDS_tools.get_filenames(filenames[i],filepath, satname)
             # read and preprocess image
-            im_ms, georef, cloud_mask, im_extra, im_QA, im_nodata = preprocess_single(fn, satname, settings['cloud_mask_issue'], settings['pan_off'])
+            im_ms, georef, cloud_mask, im_extra, im_QA, im_nodata = preprocess_single(fn, satname, settings['cloud_mask_issue'],
+                                                                                      settings['pan_off'], collection)
 
             # compute cloud_cover percentage (with no data pixels)
             cloud_cover_combined = np.divide(sum(sum(cloud_mask.astype(int))),
@@ -646,6 +671,7 @@ def get_reference_sl(metadata, settings):
 
     sitename = settings['inputs']['sitename']
     filepath_data = settings['inputs']['filepath']
+    collection = settings['inputs']['landsat_collection']
     pts_coords = []
     # check if reference shoreline already exists in the corresponding folder
     filepath = os.path.join(filepath_data, sitename)
@@ -656,7 +682,6 @@ def get_reference_sl(metadata, settings):
         with open(os.path.join(filepath, sitename + '_reference_shoreline.pkl'), 'rb') as f:
             refsl = pickle.load(f)
         return refsl
-
     # otherwise get the user to manually digitise a shoreline on 
     # S2, L8, L9 or L5 images (no L7 because of scan line error)
     # first try to use S2 images (10m res for manually digitizing the reference shoreline)
@@ -668,19 +693,20 @@ def get_reference_sl(metadata, settings):
     elif 'L5' in metadata.keys(): satname = 'L5'
     # if only L7 images, ask user to download other images
     else:
-        raise Exception('You cannot digitize the shoreline on L7 images (because of gaps in the images), add another L8, S2 or L5 to your dataset.')
+            raise Exception('You cannot digitize the shoreline on L7 images (because of gaps in the images), add another L8, S2 or L5 to your dataset.')
     filepath = SDS_tools.get_filepath(settings['inputs'],satname)
     filenames = metadata[satname]['filenames']
+
     # create figure
     fig, ax = plt.subplots(1,1, figsize=[18,9], tight_layout=True)
     mng = plt.get_current_fig_manager()
     mng.window.showMaximized()
     # loop trhough the images
     for i in range(len(filenames)):
-
         # read image
         fn = SDS_tools.get_filenames(filenames[i],filepath, satname)
-        im_ms, georef, cloud_mask, im_extra, im_QA, im_nodata = preprocess_single(fn, satname, settings['cloud_mask_issue'], settings['pan_off'])
+        im_ms, georef, cloud_mask, im_extra, im_QA, im_nodata = preprocess_single(fn, satname, settings['cloud_mask_issue'],
+                                                                                  settings['pan_off'], collection)
 
         # compute cloud_cover percentage (with no data pixels)
         cloud_cover_combined = np.divide(sum(sum(cloud_mask.astype(int))),
@@ -692,18 +718,14 @@ def get_reference_sl(metadata, settings):
         # compute updated cloud cover percentage (without no data pixels)
         cloud_cover = np.divide(sum(sum(cloud_mask_adv.astype(int))),
                                 (sum(sum((~im_nodata).astype(int)))))
-
         # skip image if cloud cover is above threshold
         if cloud_cover > settings['cloud_thresh']:
             continue
-
         # rescale image intensity for display purposes
         im_RGB = rescale_image_intensity(im_ms[:,:,[2,1,0]], cloud_mask, 99.9)
-
         # plot the image RGB on a figure
         ax.axis('off')
         ax.imshow(im_RGB)
-
         # decide if the image if good enough for digitizing the shoreline
         ax.set_title('Press <right arrow> if image is clear enough to digitize the shoreline.\n' +
                   'If the image is cloudy press <left arrow> to get another image', fontsize=14)
@@ -745,7 +767,7 @@ def get_reference_sl(metadata, settings):
                 raise StopIteration('User cancelled checking shoreline detection')
             else:
                 plt.waitforbuttonpress()
-
+                
         if skip_image:
             ax.clear()
             continue
@@ -768,13 +790,11 @@ def get_reference_sl(metadata, settings):
                           'Start at one end of the beach.\n' + 'When finished digitizing, click <ENTER>',
                           fontsize=14)
                 plt.draw()
-
                 # let user click on the shoreline
                 pts = ginput(n=50000, timeout=-1, show_clicks=True)
                 pts_pix = np.array(pts)
                 # convert pixel coordinates to world coordinates
                 pts_world = SDS_tools.convert_pix2world(pts_pix[:,[1,0]], georef)
-
                 # interpolate between points clicked by the user (1m resolution)
                 pts_world_interp = np.expand_dims(np.array([np.nan, np.nan]),axis=0)
                 for k in range(len(pts_world)-1):
@@ -791,10 +811,8 @@ def get_reference_sl(metadata, settings):
                     tf = transform.EuclideanTransform(rotation=phi, translation=pts_world[k,:])
                     pts_world_interp = np.append(pts_world_interp,tf(pt_coords), axis=0)
                 pts_world_interp = np.delete(pts_world_interp,0,axis=0)
-
                 # save as geometry (to create .geojson file later)
                 geoms.append(geometry.LineString(pts_world_interp))
-
                 # convert to pixel coordinates and plot
                 pts_pix_interp = SDS_tools.convert_world2pix(pts_world_interp, georef)
                 pts_sl = np.append(pts_sl, pts_world_interp, axis=0)
@@ -819,36 +837,37 @@ def get_reference_sl(metadata, settings):
                     ginput(n=1, timeout=3, show_clicks=False)
                     plt.close()
                     break
-                pts_sl = np.delete(pts_sl,0,axis=0)
-                # convert world image coordinates to user-defined coordinate system
-                image_epsg = metadata[satname]['epsg'][i]
-                pts_coords = SDS_tools.convert_epsg(pts_sl, image_epsg, settings['output_epsg'])
 
-                # save the reference shoreline as .pkl
-                filepath = os.path.join(filepath_data, sitename)
-                with open(os.path.join(filepath, sitename + '_reference_shoreline.pkl'), 'wb') as f:
-                    pickle.dump(pts_coords, f)
+            pts_sl = np.delete(pts_sl,0,axis=0)
+            # convert world image coordinates to user-defined coordinate system
+            image_epsg = metadata[satname]['epsg'][i]
+            pts_coords = SDS_tools.convert_epsg(pts_sl, image_epsg, settings['output_epsg'])
 
-                # also store as .geojson in case user wants to drag-and-drop on GIS for verification
-                for k,line in enumerate(geoms):
-                    gdf = gpd.GeoDataFrame(geometry=gpd.GeoSeries(line))
-                    gdf.index = [k]
-                    gdf.loc[k,'name'] = 'reference shoreline ' + str(k+1)
-                    # store into geodataframe
-                    if k == 0:
-                        gdf_all = gdf
-                    else:
-                        gdf_all = gdf_all.append(gdf)
-                gdf_all.crs = {'init':'epsg:'+str(image_epsg)}
-                # convert from image_epsg to user-defined coordinate system
-                gdf_all = gdf_all.to_crs({'init': 'epsg:'+str(settings['output_epsg'])})
-                # save as geojson
-                gdf_all.to_file(os.path.join(filepath, sitename + '_reference_shoreline.geojson'),
-                                driver='GeoJSON', encoding='utf-8')
+            # save the reference shoreline as .pkl
+            filepath = os.path.join(filepath_data, sitename)
+            with open(os.path.join(filepath, sitename + '_reference_shoreline.pkl'), 'wb') as f:
+                pickle.dump(pts_coords, f)
 
-                print('Reference shoreline has been saved in ' + filepath)
-                break
-            
+            # also store as .geojson in case user wants to drag-and-drop on GIS for verification
+            for k,line in enumerate(geoms):
+                gdf = gpd.GeoDataFrame(geometry=gpd.GeoSeries(line))
+                gdf.index = [k]
+                gdf.loc[k,'name'] = 'reference shoreline ' + str(k+1)
+                # store into geodataframe
+                if k == 0:
+                    gdf_all = gdf
+                else:
+                    gdf_all = gdf_all.append(gdf)
+            gdf_all.crs = {'init':'epsg:'+str(image_epsg)}
+            # convert from image_epsg to user-defined coordinate system
+            gdf_all = gdf_all.to_crs({'init': 'epsg:'+str(settings['output_epsg'])})
+            # save as geojson
+            gdf_all.to_file(os.path.join(filepath, sitename + '_reference_shoreline.geojson'),
+                            driver='GeoJSON', encoding='utf-8')
+
+            print('Reference shoreline has been saved in ' + filepath)
+            break
+
     # check if a shoreline was digitised
     if len(pts_coords) == 0:
         raise Exception('No cloud free images are available to digitise the reference shoreline,'+

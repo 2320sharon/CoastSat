@@ -19,6 +19,8 @@ from astropy.convolution import convolve
 import pytz
 from datetime import datetime, timedelta
 
+# np.seterr(all='ignore') # raise/ignore divisions by 0 and nans
+
 ###################################################################################################
 # COORDINATES CONVERSION FUNCTIONS
 ###################################################################################################
@@ -183,7 +185,7 @@ def nd_index(im1, im2, cloud_mask):
         Image (2D) containing the ND index
         
     """
-
+    
     # reshape the cloud mask
     vec_mask = cloud_mask.reshape(im1.shape[0] * im1.shape[1])
     # initialise with NaNs

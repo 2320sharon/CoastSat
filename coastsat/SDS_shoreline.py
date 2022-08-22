@@ -34,8 +34,7 @@ from datetime import datetime
 from pylab import ginput
 
 # CoastSat modules
-from coastsat import SDS_tools, SDS_preprocess
-# from CoastSeg.coastsat import SDS_tools, SDS_preprocess
+from CoastSeg.CoastSat.coastsat import SDS_tools, SDS_preprocess
 
 np.seterr(all='ignore') # raise/ignore divisions by 0 and nans
 
@@ -86,6 +85,7 @@ def extract_shorelines(metadata, settings):
 
     sitename = settings['inputs']['sitename']
     filepath_data = settings['inputs']['filepath']
+    collection = settings['inputs']['landsat_collection']
     filepath_models = os.path.join(os.getcwd(), 'classification', 'models')
     # initialise output structure
     output = dict([])
@@ -147,7 +147,10 @@ def extract_shorelines(metadata, settings):
             # get image filename
             fn = SDS_tools.get_filenames(filenames[i],filepath, satname)
             # preprocess image (cloud mask + pansharpening/downsampling)
-            im_ms, georef, cloud_mask, im_extra, im_QA, im_nodata = SDS_preprocess.preprocess_single(fn, satname, settings['cloud_mask_issue'], settings['pan_off'])
+            im_ms, georef, cloud_mask, im_extra, im_QA, im_nodata = SDS_preprocess.preprocess_single(fn, satname, 
+                                                                                                     settings['cloud_mask_issue'], 
+                                                                                                     settings['pan_off'],
+                                                                                                     collection)
             # get image spatial reference system (epsg code) from metadata dict
             image_epsg = metadata[satname]['epsg'][i]
             
@@ -176,7 +179,7 @@ def extract_shorelines(metadata, settings):
             # if adjust_detection is True, let the user adjust the detected shoreline
             if settings['adjust_detection']:
                 date = filenames[i][:19]
-                skip_image, shoreline, t_mndwi = adjust_detection(im_ms, cloud_mask, im_labels,
+                skip_image, shoreline, t_mndwi = adjust_detection(im_ms, cloud_mask, im_nodata, im_labels,
                                                                   im_ref_buffer, image_epsg, georef,
                                                                   settings, date, satname)
                 # if the user decides to skip the image, continue and do not save the mapped shoreline
@@ -905,8 +908,8 @@ def show_detection(im_ms, cloud_mask, im_labels, shoreline,image_epsg, georef,
 
     return skip_image
 
-def adjust_detection(im_ms, cloud_mask, im_labels, im_ref_buffer, image_epsg, georef,
-                       settings, date, satname):
+def adjust_detection(im_ms, cloud_mask, im_nodata, im_labels, im_ref_buffer, image_epsg, georef,
+                     settings, date, satname):
     """
     Advanced version of show detection where the user can adjust the detected 
     shorelines with a slide bar.
@@ -1068,7 +1071,8 @@ def adjust_detection(im_ms, cloud_mask, im_labels, im_ref_buffer, image_epsg, ge
         return True,[],[]
 
     # process the water contours into a shoreline
-    shoreline = process_shoreline(contours_mndwi, cloud_mask, georef, image_epsg, settings)
+    cloud_mask_adv = np.logical_xor(cloud_mask, im_nodata) 
+    shoreline = process_shoreline(contours_mndwi, cloud_mask_adv, im_nodata, georef, image_epsg, settings)
     # convert shoreline to pixels
     if len(shoreline) > 0:
         sl_pix = SDS_tools.convert_world2pix(SDS_tools.convert_epsg(shoreline,

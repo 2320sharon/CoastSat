@@ -19,8 +19,7 @@ import skimage.transform as transform
 from pylab import ginput
 
 # CoastSat modules
-from coastsat import SDS_tools
-# from CoastSeg.coastsat import SDS_tools
+from CoastSeg.CoastSat.coastsat import SDS_tools
 
 ###################################################################################################
 # DRAW/LOAD TRANSECTS

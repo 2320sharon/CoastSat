@@ -30,12 +30,10 @@ from scipy import ndimage
 
 # CoastSat modules
 from coastsat import SDS_preprocess, SDS_tools, gdal_merge
-# from CoastSeg.coastsat import SDS_preprocess, SDS_tools, gdal_merge
 
 np.seterr(all='ignore') # raise/ignore divisions by 0 and nans
 gdal.PushErrorHandler('CPLQuietErrorHandler')
 
-# Main function to download images from the EarthEngine server
 def retrieve_images(inputs):
     """
     Downloads all images from Landsat 5, Landsat 7, Landsat 8 and Sentinel-2
@@ -182,8 +180,19 @@ def retrieve_images(inputs):
                 proj = image_ee.select('B1').projection()
                 ee_region = adjust_polygon(inputs['polygon'],proj)
                 # download .tif from EE (one file with ms bands and one file with QA band)
-                fn_ms, fn_QA = download_tif(image_ee,ee_region,bands['ms'],fp_ms)
-                
+                count = 0
+                while True:
+                    try:    
+                        fn_ms, fn_QA = download_tif(image_ee,ee_region,bands['ms'],fp_ms) 
+                        break
+                    except:
+                        print('\nDownload failed, trying again...')
+                        count += 1
+                        if count > 100:
+                            raise Exception('Too many attempts, crashed while downloading image %s'%im_meta['id'])
+                        else:
+                            continue
+                        
                 # create filename for image
                 for key in bands.keys():
                     im_fn[key] = im_date + '_' + satname + '_' + inputs['sitename'] + '_' + key + suffix
@@ -237,8 +246,19 @@ def retrieve_images(inputs):
                 ee_region_pan = adjust_polygon(inputs['polygon'],proj_pan)
 
                 # download both ms and pan bands from EE
-                fn_ms, fn_QA = download_tif(image_ee,ee_region_ms,bands['ms'],fp_ms)
-                fn_pan = download_tif(image_ee,ee_region_pan,bands['pan'],fp_pan)
+                count = 0
+                while True:
+                    try:    
+                        fn_ms, fn_QA = download_tif(image_ee,ee_region_ms,bands['ms'],fp_ms)
+                        fn_pan = download_tif(image_ee,ee_region_pan,bands['pan'],fp_pan)
+                        break
+                    except:
+                        print('\nDownload failed, trying again...')
+                        count += 1
+                        if count > 100:
+                            raise Exception('Too many attempts, crashed while downloading image %s'%im_meta['id'])
+                        else:
+                            continue
                 
                 # create filename for both images (ms and pan)
                 for key in bands.keys():
@@ -357,7 +377,6 @@ def retrieve_images(inputs):
     print('Satellite images downloaded from GEE and save in %s'%im_folder)
     return metadata
 
-# function to load the metadata if images have already been downloaded
 def get_metadata(inputs):
     """
     Gets the metadata from the downloaded images by parsing .txt files located
@@ -425,7 +444,8 @@ def get_metadata(inputs):
 
 def check_images_available(inputs):
     """
-    Create the structure of subfolders for each satellite mission
+    Scan the GEE collections to see how many images are available for each
+    satellite mission (L5,L7,L8,L9,S2), collection (C01,C02) and tier (T1,T2).
 
     KV WRL 2018
 
@@ -452,14 +472,10 @@ def check_images_available(inputs):
         ee.ImageCollection('LANDSAT/LT05/C01/T1_TOA')
     except:
         ee.Initialize()
-
-    print('Images available between %s and %s:'%(inputs['dates'][0],inputs['dates'][1]), end='\n')
-    # check how many images are available in Tier 1 and Sentinel Level-1C
-    col_names_T1 = {'L5':'LANDSAT/LT05/C01/T1_TOA',
-                 'L7':'LANDSAT/LE07/C01/T1_TOA',
-                 'L8':'LANDSAT/LC08/C01/T1_TOA',
-                 'S2':'COPERNICUS/S2'}
-
+        
+    print('Number of images available between %s and %s:'%(dates_str[0],dates_str[1]), end='\n')
+    
+    # get images in Landsat Tier 1 as well as Sentinel Level-1C
     print('- In Landsat Tier 1 & Sentinel-2 Level-1C:')
     im_dict_T1 = dict([])
     sum_img = 0
@@ -700,7 +716,33 @@ def download_tif(image, polygon, bands, filepath):
             return fn_all[0]
 
 def warp_image_to_target(fn_in,fn_out,fn_target,double_res=True,resampling_method='bilinear'):
-    
+    """
+    Resample an image on a new pixel grid based on a target image using gdal_warp.
+    This is used to align the multispectral and panchromatic bands, as well as just downsample certain bands.
+
+    KV WRL 2022
+
+    Arguments:
+    -----------
+    fn_in: str
+        filepath of the input image (points to .tif file)
+    fn_out: str
+        filepath of the output image (will be created)
+    fn_target: str
+        filepath of the target image
+    double_res: boolean
+        this function can be used to downsample images by settings the input and target 
+        filepaths to the same imageif the input and target images are the same and settings
+        double_res = True to downsample by a factor of 2
+    resampling_method: str
+        method using to resample the image on the new pixel grid. See gdal_warp documentation
+        for options (https://gdal.org/programs/gdalwarp.html)
+
+    Returns:
+    -----------
+    Creates a new .tif file (fn_out)
+
+    """    
     # get output extent from target image
     im_target = gdal.Open(fn_target, gdal.GA_ReadOnly)
     georef_target = np.array(im_target.GetGeoTransform())
@@ -930,10 +972,14 @@ def merge_overlapping_images(metadata,inputs):
         "return duplicates and indices"
         def duplicates(lst, item):
                 return [i for i, x in enumerate(lst) if x == item]
+
         return dict((x, duplicates(lst, x)) for x in set(lst) if lst.count(x) > 1)    
       
     # first pass on images that have the exact same timestamp
     duplicates = duplicates_dict([_.split('_')[0] for _ in filenames])
+    # {"S2-2029-2020": [0,1,2,3]}
+    # {"duplicate_filename": [indices of duplicated files]"}
+
     total_removed_step1 = 0
     if len(duplicates) > 0:
         # loop through each pair of duplicates and merge them
@@ -947,9 +993,16 @@ def merge_overlapping_images(metadata,inputs):
                       os.path.join(filepath, 'S2', '20m',  filenames[idx_dup[index]].replace('10m','20m')),
                       os.path.join(filepath, 'S2', '60m',  filenames[idx_dup[index]].replace('10m','60m')),
                       os.path.join(filepath, 'S2', 'meta', filenames[idx_dup[index]].replace('_10m','').replace('.tif','.txt'))])
-                # bounding polygons
-                polygons.append(SDS_tools.get_image_bounds(fn_im[index][0]))
-                im_epsg.append(metadata[sat]['epsg'][idx_dup[index]])
+                try: 
+                    # bounding polygons
+                    polygons.append(SDS_tools.get_image_bounds(fn_im[index][0]))
+                    im_epsg.append(metadata[sat]['epsg'][idx_dup[index]])
+                except AttributeError:
+                    print("\n Error getting the TIF. Skipping this iteration of the loop")    
+                    continue
+                except FileNotFoundError:
+                    print(f"\n The file {fn_im[index][0]} did not exist")    
+                    continue
             # check if epsg are the same, print a warning message
             if len(np.unique(im_epsg)) > 1:
                 print('WARNING: there was an error as two S2 images do not have the same epsg,'+
@@ -1069,7 +1122,7 @@ def merge_overlapping_images(metadata,inputs):
         else:
             for index in range(len(pair)):
                 # read image
-                im_ms, georef, cloud_mask, im_extra, im_QA, im_nodata = SDS_preprocess.preprocess_single(fn_im[index], sat, False)
+                im_ms, georef, cloud_mask, im_extra, im_QA, im_nodata = SDS_preprocess.preprocess_single(fn_im[index], sat, False, 'C01')
                 # in Sentinel2 images close to the edge of the image there are some artefacts,
                 # that are squares with constant pixel intensities. They need to be masked in the
                 # raster (GEOTIFF). It can be done using the image standard deviation, which
