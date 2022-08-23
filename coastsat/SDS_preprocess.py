@@ -29,7 +29,7 @@ from shapely import geometry
 import re
 
 # CoastSat modules
-from CoastSeg.CoastSat.coastsat import SDS_tools
+from coastsat import SDS_tools
 
 np.seterr(all='ignore') # raise/ignore divisions by 0 and nans
 
