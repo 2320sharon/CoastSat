@@ -19,6 +19,8 @@ from astropy.convolution import convolve
 import pytz
 from datetime import datetime, timedelta
 
+# np.seterr(all='ignore') # raise/ignore divisions by 0 and nans
+
 ###################################################################################################
 # COORDINATES CONVERSION FUNCTIONS
 ###################################################################################################
@@ -114,6 +116,7 @@ def convert_world2pix(points, georef):
         
     return points_converted
 
+
 def convert_epsg(points, epsg_in, epsg_out):
     """
     Converts from one spatial reference to another using the epsg codes
@@ -182,7 +185,7 @@ def nd_index(im1, im2, cloud_mask):
         Image (2D) containing the ND index
         
     """
-
+    
     # reshape the cloud mask
     vec_mask = cloud_mask.reshape(im1.shape[0] * im1.shape[1])
     # initialise with NaNs
@@ -266,6 +269,7 @@ def mask_raster(fn, mask):
         out_band.WriteArray(out_data)
     # close dataset and flush cache
     raster = None
+
 
 ###################################################################################################
 # UTILITIES
