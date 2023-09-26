@@ -30,7 +30,7 @@ import matplotlib.lines as mlines
 import matplotlib.cm as cm
 from matplotlib import gridspec
 import pickle
-from datetime import datetime
+from datetime import datetime, timedelta
 from pylab import ginput
 
 # CoastSat modules
@@ -559,7 +559,7 @@ def create_shoreline_buffer(im_shape, georef, image_epsg, pixel_size, settings):
 
         # convert reference shoreline to pixel coordinates
         ref_sl = settings['reference_shoreline']
-        ref_sl_conv = SDS_tools.convert_epsg(ref_sl, settings['output_epsg'],image_epsg)[:,:-1]
+        ref_sl_conv = SDS_tools.convert_epsg(ref_sl, settings['output_epsg'],image_epsg)
         ref_sl_pix = SDS_tools.convert_world2pix(ref_sl_conv, georef)
         ref_sl_pix_rounded = np.round(ref_sl_pix).astype(int)
 
@@ -682,7 +682,7 @@ def process_shoreline(contours, cloud_mask, im_nodata, georef, image_epsg, setti
         idx_cloud = np.array([(idx_cloud[0][k], idx_cloud[1][k]) for k in range(len(idx_cloud[0]))])
         # convert to world coordinates and same epsg as the shoreline points
         coords_cloud = SDS_tools.convert_epsg(SDS_tools.convert_pix2world(idx_cloud, georef),
-                                               image_epsg, settings['output_epsg'])[:,:-1]
+                                               image_epsg, settings['output_epsg'])
         # only keep the shoreline points that are at least 30m from any cloud pixel
         idx_keep = np.ones(len(shoreline)).astype(bool)
         for k in range(len(shoreline)):
@@ -697,7 +697,7 @@ def process_shoreline(contours, cloud_mask, im_nodata, georef, image_epsg, setti
         idx_cloud = np.array([(idx_cloud[0][k], idx_cloud[1][k]) for k in range(len(idx_cloud[0]))])
         # convert to world coordinates and same epsg as the shoreline points
         coords_cloud = SDS_tools.convert_epsg(SDS_tools.convert_pix2world(idx_cloud, georef),
-                                               image_epsg, settings['output_epsg'])[:,:-1]
+                                               image_epsg, settings['output_epsg'])
         # only keep the shoreline points that are at least 30m from any nodata pixel
         idx_keep = np.ones(len(shoreline)).astype(bool)
         for k in range(len(shoreline)):
@@ -783,17 +783,19 @@ def show_detection(im_ms, cloud_mask, im_labels, shoreline,image_epsg, georef,
     try:
         sl_pix = SDS_tools.convert_world2pix(SDS_tools.convert_epsg(shoreline,
                                                                     settings['output_epsg'],
-                                                                    image_epsg)[:,[0,1]], georef)
+                                                                    image_epsg), georef)
     except:
         # if try fails, just add nan into the shoreline vector so the next parts can still run
         sl_pix = np.array([[np.nan, np.nan],[np.nan, np.nan]])
 
     if plt.get_fignums():
-            # get open figure if it exists
-            fig = plt.gcf()
-            ax1 = fig.axes[0]
-            ax2 = fig.axes[1]
-            ax3 = fig.axes[2]
+        # get open figure if it exists
+        fig = plt.gcf()
+        ax1 = fig.axes[0]
+        ax2 = fig.axes[1]
+        ax3 = fig.axes[2]
+        ax4 = fig.axes[3]     
+
     else:
         # else create a new figure
         fig = plt.figure()
@@ -804,20 +806,32 @@ def show_detection(im_ms, cloud_mask, im_labels, shoreline,image_epsg, georef,
         # according to the image shape, decide whether it is better to have the images
         # in vertical subplots or horizontal subplots
         if im_RGB.shape[1] > 2.5*im_RGB.shape[0]:
-            # vertical subplots
-            gs = gridspec.GridSpec(3, 1)
-            gs.update(bottom=0.03, top=0.97, left=0.03, right=0.97)
-            ax1 = fig.add_subplot(gs[0,0])
-            ax2 = fig.add_subplot(gs[1,0], sharex=ax1, sharey=ax1)
-            ax3 = fig.add_subplot(gs[2,0], sharex=ax1, sharey=ax1)
-        else:
             # horizontal subplots
-            gs = gridspec.GridSpec(1, 3)
-            gs.update(bottom=0.05, top=0.95, left=0.05, right=0.95)
-            ax1 = fig.add_subplot(gs[0,0])
-            ax2 = fig.add_subplot(gs[0,1], sharex=ax1, sharey=ax1)
-            ax3 = fig.add_subplot(gs[0,2], sharex=ax1, sharey=ax1)
-
+            gs = gridspec.GridSpec(4, 1,height_ratios=[0.1,1,1,1])
+            gs.update(bottom=0.03, top=0.97, left=0.03, right=0.97)
+            ax1 = fig.add_subplot(gs[1])
+            ax2 = fig.add_subplot(gs[2], sharex=ax1, sharey=ax1)
+            ax3 = fig.add_subplot(gs[3], sharex=ax1, sharey=ax1)
+            ax4 = fig.add_subplot(gs[0])
+        else:
+            # vertical subplots
+            gs = gridspec.GridSpec(2, 3,height_ratios=[1,8],hspace=0.1)
+            gs.update(bottom=0.03, top=0.99, left=0.03, right=0.97)
+            ax1 = fig.add_subplot(gs[1,0])
+            ax2 = fig.add_subplot(gs[1,1], sharex=ax1, sharey=ax1)
+            ax3 = fig.add_subplot(gs[1,2], sharex=ax1, sharey=ax1)
+            ax4 = fig.add_subplot(gs[0,:])
+            
+    # add timeline on top
+    date_start = datetime.strptime(settings['inputs']['dates'][0],'%Y-%m-%d')
+    date_end = datetime.strptime(settings['inputs']['dates'][1],'%Y-%m-%d')
+    ax4.axis('off')
+    ax4.axhline(y=0,ls='-',lw=2,c='k')
+    ax4.set(xlim=[date_start-timedelta(days=30),date_end+timedelta(days=30)],ylim=[-0.1,0.1])
+    for k in range(date_start.year,date_end.year+1):
+        ax4.plot(datetime(k,1,1),0,'ko',ms=6)
+        ax4.text(datetime(k,1,1),-0.05,str(k)[-2:],ha='center',va='center')
+    ax4.plot(datetime.strptime(date[:10],'%Y-%m-%d'),0,'rs',ms=10,mec='k')
     # change the color of nans to either black (0.0) or white (1.0) or somewhere in between
     nan_color = 1.0
     im_RGB = np.where(np.isnan(im_RGB), nan_color, im_RGB)
@@ -827,7 +841,7 @@ def show_detection(im_ms, cloud_mask, im_labels, shoreline,image_epsg, georef,
     ax1.imshow(im_RGB)
     ax1.plot(sl_pix[:,0], sl_pix[:,1], 'k.', markersize=3)
     ax1.axis('off')
-    ax1.set_title(sitename, fontweight='bold', fontsize=16)
+    ax1.set_title(sitename, fontweight='bold', fontsize=12)
 
     # create image 2 (classification)
     ax2.imshow(im_class)
@@ -839,22 +853,24 @@ def show_detection(im_ms, cloud_mask, im_labels, shoreline,image_epsg, georef,
     black_line = mlines.Line2D([],[],color='k',linestyle='-', label='shoreline')
     ax2.legend(handles=[orange_patch,white_patch,blue_patch, black_line],
                bbox_to_anchor=(1, 0.5), fontsize=10)
-    ax2.set_title(date, fontweight='bold', fontsize=16)
+    ax2.set_title(date, fontweight='bold', fontsize=12)
 
     # create image 3 (MNDWI)
     ax3.imshow(im_mwi, cmap='bwr')
     ax3.plot(sl_pix[:,0], sl_pix[:,1], 'k.', markersize=3)
     ax3.axis('off')
-    ax3.set_title(satname, fontweight='bold', fontsize=16)
-
+    ax3.set_title(satname, fontweight='bold', fontsize=12)
+    
     # additional options
-    #    ax1.set_anchor('W')
-    #    ax2.set_anchor('W')
-    #    cb = plt.colorbar()
-    #    cb.ax.tick_params(labelsize=10)
-    #    cb.set_label('MNDWI values')
-    #    ax3.set_anchor('W')
-
+    ax1.set_anchor('W')
+    ax2.set_anchor('C')
+    ax3.set_anchor('E')
+    
+    # add colorbar for MNDWI
+    # cb = plt.colorbar(mwi_plot)
+    # cb.ax.tick_params(labelsize=10)
+    # cb.set_label('MNDWI values')
+        
     # if check_detection is True, let user manually accept/reject the images
     skip_image = False
     if settings['check_detection']:
@@ -1077,7 +1093,7 @@ def adjust_detection(im_ms, cloud_mask, im_nodata, im_labels, im_ref_buffer, ima
     if len(shoreline) > 0:
         sl_pix = SDS_tools.convert_world2pix(SDS_tools.convert_epsg(shoreline,
                                                                     settings['output_epsg'],
-                                                                    image_epsg)[:,[0,1]], georef)
+                                                                    image_epsg), georef)
     else: sl_pix = np.array([[np.nan, np.nan],[np.nan, np.nan]])
     # plot the shoreline on the images
     sl_plot1 = ax1.plot(sl_pix[:,0], sl_pix[:,1], 'k.', markersize=3)
@@ -1109,7 +1125,7 @@ def adjust_detection(im_ms, cloud_mask, im_nodata, im_labels, im_ref_buffer, ima
             if len(shoreline) > 0:
                 sl_pix = SDS_tools.convert_world2pix(SDS_tools.convert_epsg(shoreline,
                                                                             settings['output_epsg'],
-                                                                            image_epsg)[:,[0,1]], georef)
+                                                                            image_epsg), georef)
             else: sl_pix = np.array([[np.nan, np.nan],[np.nan, np.nan]])
             # update the plotted shorelines
             sl_plot1[0].set_data([sl_pix[:,0], sl_pix[:,1]])

@@ -8,6 +8,7 @@ Author: Kilian Vos, Water Research Laboratory, University of New South Wales
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib import gridspec
 import pdb
 
 # other modules
@@ -18,6 +19,9 @@ import skimage.transform as transform
 from astropy.convolution import convolve
 import pytz
 from datetime import datetime, timedelta
+from scipy import stats, interpolate
+import pyproj
+import pandas as pd
 
 # np.seterr(all='ignore') # raise/ignore divisions by 0 and nans
 
@@ -139,22 +143,20 @@ def convert_epsg(points, epsg_in, epsg_out):
         
     """
     
-    # define input and output spatial references
-    inSpatialRef = osr.SpatialReference()
-    inSpatialRef.ImportFromEPSG(epsg_in)
-    outSpatialRef = osr.SpatialReference()
-    outSpatialRef.ImportFromEPSG(epsg_out)
-    # create a coordinates transform
-    coordTransform = osr.CoordinateTransformation(inSpatialRef, outSpatialRef)
-    # if list of arrays
+    # define transformer
+    proj = pyproj.Transformer.from_crs(epsg_in, epsg_out, always_xy=True)
+    
+    # transform points
     if type(points) is list:
         points_converted = []
         # iterate over the list
         for i, arr in enumerate(points): 
-            points_converted.append(np.array(coordTransform.TransformPoints(arr)))
-    # if single array
+            x,y = proj.transform(arr[:,0], arr[:,1])
+            arr_converted = np.transpose(np.array([x,y]))
+            points_converted.append(arr_converted)
     elif type(points) is np.ndarray:
-        points_converted = np.array(coordTransform.TransformPoints(points))  
+        x,y = proj.transform(points[:,0], points[:,1])
+        points_converted = np.transpose(np.array([x,y]))
     else:
         raise Exception('invalid input type')
 
@@ -510,10 +512,15 @@ def remove_duplicates(output):
             elif np.any(empty_bool): # if one empty remove that one
                 idx_remove.append(pair[np.where(empty_bool)[0][0]])
             else: # remove the shorter shoreline and keep the longer one
-                sl0 = geometry.LineString(output['shorelines'][pair[0]]) 
-                sl1 = geometry.LineString(output['shorelines'][pair[1]])
-                if sl0.length >= sl1.length: idx_remove.append(pair[1])
-                else: idx_remove.append(pair[0])
+                satnames = [output['satname'][_] for _ in pair]
+                # keep Landsat 9 if it duplicates Landsat 7
+                if 'L9' in satnames and 'L7' in satnames: 
+                    idx_remove.append(pair[np.where([_ == 'L7' for _ in satnames])[0][0]])
+                else: # keep the longest shorelines
+                    sl0 = geometry.LineString(output['shorelines'][pair[0]]) 
+                    sl1 = geometry.LineString(output['shorelines'][pair[1]])
+                    if sl0.length >= sl1.length: idx_remove.append(pair[1])
+                    else: idx_remove.append(pair[0])
         # create a new output structure with all the duplicates removed
         idx_remove = sorted(idx_remove)
         idx_all = np.linspace(0, len(dates)-1, len(dates)).astype(int)
@@ -548,8 +555,15 @@ def remove_inaccurate_georef(output, accuracy):
     """
 
     # find indices of shorelines to be removed
-    idx = np.where(~np.logical_or(np.array(output['geoaccuracy']) == -1,
-                                  np.array(output['geoaccuracy']) >= accuracy))[0]
+    idx = []
+    for i in range(len(output['geoaccuracy'])):
+        geoacc = output['geoaccuracy'][i]
+        if geoacc in ['PASSED','FAILED']:
+            if geoacc == 'PASSED':
+                idx.append(i)
+        else:
+            if geoacc <= accuracy:
+                idx.append(i)
     # idx = np.where(~(np.array(output['geoaccuracy']) >= accuracy))[0]
     output_filtered = dict([])
     for key in output.keys():
@@ -652,12 +666,12 @@ def transects_from_geojson(filename):
         
     """  
     
-    gdf = gpd.read_file(filename)
+    gdf = gpd.read_file(filename,driver='GeoJSON')
     transects = dict([])
     for i in gdf.index:
         transects[gdf.loc[i,'name']] = np.array(gdf.loc[i,'geometry'].coords)
-        
-    print('%d transects have been loaded' % len(transects.keys()))
+    print('%d transects have been loaded'%len(transects.keys()), end=' ')
+    print('coordinates are in epsg:%d'%gdf.crs.to_epsg())
 
     return transects
 
@@ -686,7 +700,7 @@ def output_to_gdf(output, geomtype):
     gdf_all = None
     for i in range(len(output['shorelines'])):
         # skip if there shoreline is empty 
-        if len(output['shorelines'][i]) == 0:
+        if len(output['shorelines'][i]) < 2:
             continue
         else:
             # save the geometry depending on the linestyle
@@ -708,7 +722,7 @@ def output_to_gdf(output, geomtype):
             if counter == 0:
                 gdf_all = gdf
             else:
-                gdf_all = gdf_all.append(gdf)
+                gdf_all = pd.concat([gdf_all, gdf])
             counter = counter + 1
             
     return gdf_all
@@ -742,59 +756,9 @@ def transects_to_gdf(transects):
         if i == 0:
             gdf_all = gdf
         else:
-            gdf_all = gdf_all.append(gdf)
+            gdf_all = pd.concat([gdf_all, gdf])
             
     return gdf_all
-
-def get_image_bounds(fn):
-    """
-    Returns a polygon with the bounds of the image in the .tif file
-     
-    KV WRL 2020
-
-    Arguments:
-    -----------
-    fn: str
-        path to the image (.tif file)         
-                
-    Returns:    
-    -----------
-    bounds_polygon: shapely.geometry.Polygon
-        polygon with the image bounds
-        
-    """
-    
-    # nested functions to get the extent 
-    # copied from https://gis.stackexchange.com/questions/57834/how-to-get-raster-corner-coordinates-using-python-gdal-bindings
-    def GetExtent(gt,cols,rows):
-        'Return list of corner coordinates from a geotransform'
-        ext=[]
-        xarr=[0,cols]
-        yarr=[0,rows]
-        for px in xarr:
-            for py in yarr:
-                x=gt[0]+(px*gt[1])+(py*gt[2])
-                y=gt[3]+(px*gt[4])+(py*gt[5])
-                ext.append([x,y])
-            yarr.reverse()
-        return ext
-    
-    # load .tif file and get bounds
-    if not os.path.exists(fn):
-        raise FileNotFoundError(f"{fn}")
-    data = gdal.Open(fn, gdal.GA_ReadOnly)
-    # Check if data is null meaning the open failed
-    if data is None:
-        print("TIF file: ",fn, "cannot be opened" )
-        os.remove(fn)
-        raise AttributeError
-    else:
-        gt = data.GetGeoTransform()
-        cols = data.RasterXSize
-        rows = data.RasterYSize
-        ext = GetExtent(gt,cols,rows)
-    
-    return geometry.Polygon(ext)
 
 def smallest_rectangle(polygon):
     """
@@ -821,3 +785,120 @@ def smallest_rectangle(polygon):
     coords_polygon = np.array(polygon_geom.exterior.coords)
     polygon_rect = [[[_[0], _[1]] for _ in coords_polygon]]
     return polygon_rect
+
+def compare_timeseries(ts,gt,key,settings):
+    if key not in gt.keys():
+        raise Exception('transect name %s does not exist in grountruth file'%key)
+    # remove nans
+    chainage = np.array(ts[key])
+    idx_nan = np.isnan(chainage)
+    dates_nonans = [ts['dates'][k].to_pydatetime() for k in np.where(~idx_nan)[0]]
+    satnames_nonans = [ts['satname'][k] for k in np.where(~idx_nan)[0]]
+    chain_nonans = chainage[~idx_nan]
+    # define satellite and survey time-series
+    chain_sat_dm = chain_nonans
+    chain_sur_dm = gt[key]['chainages']
+    # plot the time-series
+    fig= plt.figure(figsize=[15,8], tight_layout=True)
+    gs = gridspec.GridSpec(2,3)
+    ax0 = fig.add_subplot(gs[0,:])
+    ax0.grid(which='major',linestyle=':',color='0.5')
+    ax0.plot(gt[key]['dates'], chain_sur_dm,'-o',mfc='w',ms=3,label='in situ')
+    ax0.plot(dates_nonans, chain_sat_dm,'-o',mfc='w',ms=3,label='satellite')
+    ax0.set(title= 'Transect ' + key, xlim=[dates_nonans[0]-timedelta(days=30),
+                                            dates_nonans[-1]+timedelta(days=30)])#,ylim=sett['lims'])
+    ax0.legend(loc='upper left')
+    
+    # interpolate surveyed data around satellite data based on the parameters (min_days and max_days)
+    chain_int = np.nan*np.ones(len(dates_nonans))
+    for k,date in enumerate(dates_nonans):
+        # compute the days distance for each satellite date
+        days_diff = np.array([ (_ - date).days for _ in gt[key]['dates']])
+        # if nothing within max_days put a nan
+        if np.min(np.abs(days_diff)) > settings['max_days']:
+            chain_int[k] = np.nan
+        else:
+            # if a point within min_days, take that point (no interpolation)
+            if np.min(np.abs(days_diff)) < settings['min_days']:
+                idx_closest = np.where(np.abs(days_diff) == np.min(np.abs(days_diff)))
+                chain_int[k] = float(gt[key]['chainages'][idx_closest[0][0]])
+            else: # otherwise, between min_days and max_days, interpolate between the 2 closest points
+                if sum(days_diff > 0) == 0:
+                    break
+                idx_after = np.where(days_diff > 0)[0][0]
+                idx_before = idx_after - 1
+                x = [gt[key]['dates'][idx_before].toordinal() , gt[key]['dates'][idx_after].toordinal()]
+                y = [gt[key]['chainages'][idx_before], gt[key]['chainages'][idx_after]]
+                f = interpolate.interp1d(x, y,bounds_error=True)
+                try:
+                    chain_int[k] = float(f(date.toordinal()))
+                except:
+                    chain_int[k] = np.nan
+    # remove nans again
+    idx_nan = np.isnan(chain_int)
+    chain_sat = chain_nonans[~idx_nan]
+    chain_sur = chain_int[~idx_nan]
+    dates_sat = [dates_nonans[k] for k in np.where(~idx_nan)[0]]
+    satnames = [satnames_nonans[k] for k in np.where(~idx_nan)[0]]
+    if len(chain_sat) < 8 or len(chain_sur) < 8: 
+        return  chain_sat, chain_sur, satnames, fig
+    # error statistics
+    slope, intercept, rvalue, pvalue, std_err = stats.linregress(chain_sur, chain_sat)
+    R2 = rvalue**2
+    ax0.text(0,1,'R2 = %.2f'%R2,bbox=dict(boxstyle='square', facecolor='w', alpha=1),transform=ax0.transAxes)
+    chain_error = chain_sat - chain_sur
+    rmse = np.sqrt(np.mean((chain_error)**2))
+    mean = np.mean(chain_error)
+    std = np.std(chain_error)
+    q90 = np.percentile(np.abs(chain_error), 90)   
+    
+    # 1:1 plot
+    ax1 = fig.add_subplot(gs[1,0])
+    ax1.axis('equal')
+    ax1.grid(which='major',linestyle=':',color='0.5')
+    for k,sat in enumerate(list(np.unique(satnames))):
+        idx = np.where([_ == sat for _ in satnames])[0]
+        ax1.plot(chain_sur[idx], chain_sat[idx], 'o', ms=4, mfc='C'+str(k),mec='C'+str(k), alpha=0.7, label=sat)
+    ax1.legend(loc=4)
+    ax1.plot([ax1.get_xlim()[0], ax1.get_ylim()[1]],[ax1.get_xlim()[0], ax1.get_ylim()[1]],'k--',lw=2)
+    ax1.set(xlabel='survey [m]', ylabel='satellite [m]')   
+
+    # boxplots
+    ax2 = fig.add_subplot(gs[1,1])
+    data = []
+    median_data = []
+    n_data = []
+    ax2.yaxis.grid()
+    for k,sat in enumerate(list(np.unique(satnames))):
+        idx = np.where([_ == sat for _ in satnames])[0]
+        data.append(chain_error[idx])
+        median_data.append(np.median(chain_error[idx]))
+        n_data.append(len(chain_error[idx]))
+    bp = ax2.boxplot(data,0,'k.', labels=list(np.unique(satnames)), patch_artist=True)
+    for median in bp['medians']:
+        median.set(color='k', linewidth=1.5)
+    for j,boxes in enumerate(bp['boxes']):
+        boxes.set(facecolor='C'+str(j))
+        ax2.text(j+1,median_data[j]+1, '%.1f' % median_data[j], horizontalalignment='center', fontsize=12)
+        ax2.text(j+1+0.35,median_data[j]+1, ('n=%.d' % int(n_data[j])), ha='center', va='center', fontsize=12,
+                 rotation='vertical')
+    ax2.set(ylabel='error [m]', ylim=settings['lims'])
+    
+    # histogram
+    ax3 = fig.add_subplot(gs[1,2])
+    ax3.grid(which='major',linestyle=':',color='0.5')
+    ax3.axvline(x=0, ls='--', lw=1.5, color='k')
+    binwidth = settings['binwidth']
+    bins = np.arange(min(chain_error), max(chain_error) + binwidth, binwidth)
+    density = plt.hist(chain_error, bins=bins, density=True, color='0.6', edgecolor='k', alpha=0.5)
+    mu, std = stats.norm.fit(chain_error)
+    pval = stats.normaltest(chain_error)[1]
+    xlims = ax3.get_xlim()
+    x = np.linspace(xlims[0], xlims[1], 100)
+    p = stats.norm.pdf(x, mu, std)
+    ax3.plot(x, p, 'r-', linewidth=1)
+    ax3.set(xlabel='error [m]', ylabel='pdf', xlim=settings['lims'])
+    str_stats = ' rmse = %.1f\n mean = %.1f\n std = %.1f\n q90 = %.1f' % (rmse, mean, std, q90)
+    ax3.text(0, 0.98, str_stats,va='top', transform=ax3.transAxes)    
+    
+    return chain_sat, chain_sur, satnames, fig
