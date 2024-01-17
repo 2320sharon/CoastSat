@@ -39,6 +39,9 @@ CoastSat is an open-source software toolkit written in Python that enables users
 
 #### Latest toolbox updates
 
+:arrow_forward: *(2023/11/09)*
+CoastSat v2.4: bug & fixes, function to create animations, S2_HARMONIZED collection, better instructions on gcloud installations
+
 :arrow_forward: *(2023/07/07)*
 CoastSat v2.3: addition of a better cloud mask for Sentinel-2 imagery using the s2cloudless collection on GEE
 
@@ -80,8 +83,9 @@ Create a new environment named `coastsat` with all the required packages by ente
 ```
 conda create -n coastsat
 conda activate coastsat
-conda install -c conda-forge geopandas earthengine-api scikit-image matplotlib astropy notebook -y
-pip install pyqt5, imageio-ffmpeg
+conda install -c conda-forge geopandas -y
+conda install -c conda-forge earthengine-api scikit-image matplotlib astropy notebook -y
+pip install pyqt5 imageio-ffmpeg
 ```
 
 All the required packages have now been installed and are self-contained in an environment called `coastsat`. Always make sure that the environment is activated with:
@@ -147,7 +151,7 @@ The screenshot below shows an example of inputs that will retrieve all the image
 To map the shorelines, the following user-defined settings are needed:
 - `cloud_thresh`: threshold on maximum cloud cover that is acceptable on the images (value between 0 and 1 - this may require some initial experimentation).
 - `dist_clouds`: buffer around cloud pixels where shoreline is not mapped (in metres)
-- `output_epsg`: epsg code defining the spatial reference system of the shoreline coordinates. It has to be a cartesian coordinate system (i.e. projected) and not a geographical coordinate system (in latitude and longitude angles). See http://spatialreference.org/ to find the EPSG number corresponding to your local coordinate system. If unsure, use 3857 which is the web-mercator.
+- `output_epsg`: epsg code defining the spatial reference system of the shoreline coordinates. It has to be a cartesian coordinate system (i.e. projected) and not a geographical coordinate system (in latitude and longitude angles). See http://spatialreference.org/ to find the EPSG number corresponding to your local coordinate system. If you do not use a local projection your results may not be accurate.
 - `check_detection`: if set to `True` the user can quality control each shoreline detection interactively (recommended when mapping shorelines for the first time) and accept/reject each shoreline.
 - `adjust_detection`: in case users wants more control over the detected shorelines, they can set this parameter to `True`, then they will be able to manually adjust the threshold used to map the shoreline on each image.
 - `save_figure`: if set to `True` a figure of each mapped shoreline is saved under */filepath/sitename/jpg_files/detection*, even if the two previous parameters are set to `False`. Note that this may slow down the process.
